@@ -3,7 +3,7 @@ import User from '../models/User.js';
 import { asyncHandler } from '../middleware/error.js';
 import { ROLES, TASK_STATUS, ACTIVITY, NOTIFICATION_TYPES } from '../config/constants.js';
 import { logActivity, notify } from '../utils/activity.js';
-import { syncProjectProgress, generateTaskCode } from '../utils/workflow.js';
+import { syncProjectProgress, generateTaskCode, seedReviewChecklist, reviewChecklistComplete } from '../utils/workflow.js';
 
 const populateTask = (query) =>
   query
@@ -327,9 +327,13 @@ export const updateProgress = asyncHandler(async (req, res) => {
 
   await task.save();
 
-  await logActivity({ actor: req.user._id, action: ACTIVITY.PROGRESS_UPDATED, message: `${req.user.name} updated progress on "${task.title}" to ${value}%`, task: task._id, project: task.project });
-  if (task.assignedBy) {
-    await notify({ user: task.assignedBy, type: NOTIFICATION_TYPES.PROGRESS_UPDATED, title: 'Progress Updated', message: `"${task.title}" is now ${value}% complete`, task: task._id, project: task.project });
+  if (isDraft) {
+    await logActivity({ actor: req.user._id, action: ACTIVITY.PROGRESS_UPDATED, message: `${req.user.name} saved changes on "${task.title}" (${value}%)`, task: task._id, project: task.project });
+  } else {
+    await logActivity({ actor: req.user._id, action: ACTIVITY.PROGRESS_UPDATED, message: `${req.user.name} updated progress on "${task.title}" to ${value}%`, task: task._id, project: task.project });
+    if (task.assignedBy) {
+      await notify({ user: task.assignedBy, type: NOTIFICATION_TYPES.PROGRESS_UPDATED, title: 'Progress Updated', message: `"${task.title}" is now ${value}% complete`, task: task._id, project: task.project });
+    }
   }
 
   await syncProjectProgress(task.project, req.user._id);
@@ -361,6 +365,7 @@ export const submitTask = asyncHandler(async (req, res) => {
   task.isDraft = false;
   task.status = TASK_STATUS.SUBMITTED;
   task.managerReview = { status: 'pending' };
+  seedReviewChecklist(task, 'manager');
   await task.save();
 
   await logActivity({ actor: req.user._id, action: ACTIVITY.SUBMITTED_FOR_REVIEW, message: `${req.user.name} submitted "${task.title}" for review`, task: task._id, project: task.project });
@@ -374,9 +379,9 @@ export const submitTask = asyncHandler(async (req, res) => {
   await respond(res, task._id);
 });
 
-// PATCH /api/tasks/:id/manager-review (manager approve / request changes)
+// PATCH /api/tasks/:id/manager-review (manager approve / request changes / reject)
 export const managerReview = asyncHandler(async (req, res) => {
-  const { decision, comment } = req.body; // 'approve' | 'reject'
+  const { decision, comment } = req.body; // 'approve' | 'changes' | 'reject'
   const task = await Task.findById(req.params.id);
   if (!task) return res.status(404).json({ message: 'Task not found' });
 
@@ -394,8 +399,13 @@ export const managerReview = asyncHandler(async (req, res) => {
   if (task.status !== TASK_STATUS.SUBMITTED) {
     return res.status(409).json({ message: 'This task is not awaiting manager review' });
   }
-  if (decision === 'reject' && !(comment && comment.trim())) {
-    return res.status(400).json({ message: 'A comment is required when requesting changes' });
+
+  const sendBack = decision === 'reject' || decision === 'changes';
+  if (sendBack && !(comment && comment.trim())) {
+    return res.status(400).json({ message: 'A comment is required when requesting changes or rejecting' });
+  }
+  if (decision === 'approve' && !reviewChecklistComplete(task, 'manager')) {
+    return res.status(422).json({ message: 'Complete the review checklist before approving.', errors: ['Complete all review checklist items before approving.'] });
   }
 
   task.managerReview = { status: decision === 'approve' ? 'approved' : 'rejected', comment: comment || '', reviewedBy: req.user._id, reviewedAt: new Date() };
@@ -403,14 +413,18 @@ export const managerReview = asyncHandler(async (req, res) => {
   if (decision === 'approve') {
     task.status = TASK_STATUS.SENT_TO_ADMIN;
     task.adminReview = { status: 'pending' };
+    seedReviewChecklist(task, 'admin');
     await notify({ user: task.assignedTo, type: NOTIFICATION_TYPES.MANAGER_APPROVED, title: 'Work Approved by Manager', message: `Your work on "${task.title}" was approved and sent to Admin`, task: task._id, project: task.project });
     const admins = await User.find({ role: ROLES.ADMIN }).distinct('_id');
     await Promise.all(admins.map((a) => notify({ user: a, type: NOTIFICATION_TYPES.TASK_SUBMITTED, title: 'Task Awaiting Final Approval', message: `"${task.title}" was approved by a manager and needs your final review`, task: task._id, project: task.project })));
     await logActivity({ actor: req.user._id, action: ACTIVITY.MANAGER_APPROVED, message: `${req.user.name} approved "${task.title}" and escalated to Admin`, task: task._id, project: task.project });
   } else {
+    // Request changes / reject — return to the employee and unlock for rework.
     task.status = TASK_STATUS.MANAGER_REJECTED;
-    await notify({ user: task.assignedTo, type: NOTIFICATION_TYPES.MANAGER_CHANGES, title: 'Changes Requested', message: `Your manager requested changes on "${task.title}": ${comment}`, task: task._id, project: task.project });
-    await logActivity({ actor: req.user._id, action: ACTIVITY.MANAGER_REJECTED, message: `${req.user.name} requested changes on "${task.title}"`, task: task._id, project: task.project });
+    task.locked = false;
+    const verb = decision === 'reject' ? 'rejected' : 'requested changes on';
+    await notify({ user: task.assignedTo, type: NOTIFICATION_TYPES.MANAGER_CHANGES, title: decision === 'reject' ? 'Submission Rejected' : 'Changes Requested', message: `Your manager ${verb} "${task.title}": ${comment}`, task: task._id, project: task.project });
+    await logActivity({ actor: req.user._id, action: ACTIVITY.MANAGER_REJECTED, message: `${req.user.name} ${verb} "${task.title}"`, task: task._id, project: task.project });
   }
 
   await task.save();
@@ -418,17 +432,21 @@ export const managerReview = asyncHandler(async (req, res) => {
   await respond(res, task._id);
 });
 
-// PATCH /api/tasks/:id/admin-review (admin final approve / reject)
+// PATCH /api/tasks/:id/admin-review (admin final approve / request changes / reject)
 export const adminReview = asyncHandler(async (req, res) => {
-  const { decision, comment } = req.body;
+  const { decision, comment } = req.body; // 'approve' | 'changes' | 'reject'
   const task = await Task.findById(req.params.id);
   if (!task) return res.status(404).json({ message: 'Task not found' });
 
   if (task.status !== TASK_STATUS.SENT_TO_ADMIN) {
     return res.status(409).json({ message: 'This task is not awaiting admin review' });
   }
-  if (decision === 'reject' && !(comment && comment.trim())) {
-    return res.status(400).json({ message: 'A comment is required when requesting changes' });
+  const sendBack = decision === 'reject' || decision === 'changes';
+  if (sendBack && !(comment && comment.trim())) {
+    return res.status(400).json({ message: 'A comment is required when requesting changes or rejecting' });
+  }
+  if (decision === 'approve' && !reviewChecklistComplete(task, 'admin')) {
+    return res.status(422).json({ message: 'Complete the final approval checklist before approving.', errors: ['Complete all final approval checklist items before approving.'] });
   }
 
   task.adminReview = { status: decision === 'approve' ? 'approved' : 'rejected', comment: comment || '', reviewedBy: req.user._id, reviewedAt: new Date() };
@@ -490,10 +508,21 @@ export const toggleChecklistItem = asyncHandler(async (req, res) => {
   const task = await Task.findById(req.params.id);
   if (!task) return res.status(404).json({ message: 'Task not found' });
   if (task.locked) return res.status(403).json({ message: 'This task is completed and locked' });
+  if (!ensureAssignee(req, task)) return res.status(403).json({ message: 'Only the assignee can update this checklist' });
   const item = task.checklist.id(req.params.itemId);
   if (!item) return res.status(404).json({ message: 'Checklist item not found' });
   item.done = !item.done;
   await task.save();
+
+  const done = task.checklist.filter((c) => c.done).length;
+  await logActivity({
+    actor: req.user._id,
+    action: ACTIVITY.CHECKLIST_UPDATED,
+    message: `${req.user.name} ${item.done ? 'completed' : 'reopened'} "${item.text}" (${done}/${task.checklist.length}) on "${task.title}"`,
+    task: task._id,
+    project: task.project,
+  });
+
   await respond(res, task._id);
 });
 
@@ -505,6 +534,31 @@ export const acknowledgeCriterion = asyncHandler(async (req, res) => {
   const item = task.acceptanceCriteria.id(req.params.critId);
   if (!item) return res.status(404).json({ message: 'Criterion not found' });
   item.acknowledged = !item.acknowledged;
+  await task.save();
+  await respond(res, task._id);
+});
+
+// PATCH /api/tasks/:id/review-checklist/:scope/:itemId  (manager/admin verify items)
+export const toggleReviewItem = asyncHandler(async (req, res) => {
+  const { scope, itemId } = req.params;
+  if (!['manager', 'admin'].includes(scope)) return res.status(400).json({ message: 'Invalid checklist scope' });
+
+  const task = await Task.findById(req.params.id);
+  if (!task) return res.status(404).json({ message: 'Task not found' });
+
+  // Permission: managers verify the manager checklist while it awaits their review; admins verify the admin checklist.
+  if (scope === 'manager') {
+    if (req.user.role === ROLES.EMPLOYEE) return res.status(403).json({ message: 'Only reviewers can update this checklist' });
+    if (task.status !== TASK_STATUS.SUBMITTED) return res.status(409).json({ message: 'This task is not awaiting manager review' });
+  } else {
+    if (req.user.role !== ROLES.ADMIN) return res.status(403).json({ message: 'Only an admin can update the final approval checklist' });
+    if (task.status !== TASK_STATUS.SENT_TO_ADMIN) return res.status(409).json({ message: 'This task is not awaiting admin review' });
+  }
+
+  const field = scope === 'admin' ? 'adminChecklist' : 'managerChecklist';
+  const item = task[field].id(itemId);
+  if (!item) return res.status(404).json({ message: 'Checklist item not found' });
+  item.done = !item.done;
   await task.save();
   await respond(res, task._id);
 });

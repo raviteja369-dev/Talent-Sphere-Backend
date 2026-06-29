@@ -81,6 +81,7 @@ export const ACTIVITY = {
   TASK_PAUSED: 'task_paused',
   TASK_RESUMED: 'task_resumed',
   PROGRESS_UPDATED: 'progress_updated',
+  CHECKLIST_UPDATED: 'checklist_updated',
   COMMENT_ADDED: 'comment_added',
   ATTACHMENT_UPLOADED: 'file_uploaded',
   SUBMITTED_FOR_REVIEW: 'task_submitted',

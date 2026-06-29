@@ -32,6 +32,12 @@ const acceptanceCriterionSchema = new mongoose.Schema({
   acknowledged: { type: Boolean, default: false },
 });
 
+// Reviewer (manager / admin) verification checklist item
+const reviewChecklistItemSchema = new mongoose.Schema({
+  text: { type: String, required: true },
+  done: { type: Boolean, default: false },
+});
+
 const reviewSchema = new mongoose.Schema(
   {
     status: {
@@ -82,6 +88,10 @@ const taskSchema = new mongoose.Schema(
 
     managerReview: { type: reviewSchema, default: () => ({}) },
     adminReview: { type: reviewSchema, default: () => ({}) },
+
+    // Verification checklists the reviewer must complete before approving
+    managerChecklist: [reviewChecklistItemSchema],
+    adminChecklist: [reviewChecklistItemSchema],
 
     accepted: { type: Boolean, default: false },
     declineReason: { type: String, default: '' },

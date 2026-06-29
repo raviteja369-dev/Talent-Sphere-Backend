@@ -4,6 +4,7 @@ import {
   acceptTask, declineTask, startTask, pauseTask, resumeTask,
   updateProgress, submitTask, managerReview, adminReview,
   addComment, toggleChecklistItem, acknowledgeCriterion, addAttachment,
+  toggleReviewItem,
 } from '../controllers/taskController.js';
 import { protect, authorize } from '../middleware/auth.js';
 import { upload } from '../middleware/upload.js';
@@ -31,6 +32,7 @@ router.patch('/:id/criteria/:critId', authorize(ROLES.EMPLOYEE, ROLES.ADMIN), ac
 // Review actions
 router.patch('/:id/manager-review', authorize(ROLES.MANAGER), managerReview);
 router.patch('/:id/admin-review', authorize(ROLES.ADMIN), adminReview);
+router.patch('/:id/review-checklist/:scope/:itemId', authorize(ROLES.MANAGER, ROLES.ADMIN), toggleReviewItem);
 
 // Collaboration
 router.post('/:id/comments', addComment);

@@ -80,6 +80,45 @@ async function onProjectCompleted(project, actorId) {
   );
 }
 
+// Default reviewer verification checklists (spec §3)
+export const MANAGER_REVIEW_CHECKLIST = [
+  'Requirements Verified',
+  'Files Reviewed',
+  'Code Reviewed',
+  'Testing Verified',
+  'Documentation Verified',
+];
+
+export const ADMIN_REVIEW_CHECKLIST = [
+  'Manager Approved',
+  'Documentation Complete',
+  'Client Requirements Met',
+  'Quality Verified',
+  'Compliance Verified',
+];
+
+/**
+ * (Re)seed a task's reviewer checklist at the start of a review cycle. Always
+ * resets completion to false so each review (including after a resubmit) starts
+ * fresh, and recreates the default items when none exist.
+ */
+export function seedReviewChecklist(task, scope) {
+  const field = scope === 'admin' ? 'adminChecklist' : 'managerChecklist';
+  if (!task[field] || task[field].length === 0) {
+    const items = scope === 'admin' ? ADMIN_REVIEW_CHECKLIST : MANAGER_REVIEW_CHECKLIST;
+    task[field] = items.map((text) => ({ text, done: false }));
+  } else {
+    task[field].forEach((i) => { i.done = false; });
+  }
+}
+
+/** True when every item in the reviewer checklist has been checked. */
+export function reviewChecklistComplete(task, scope) {
+  const field = scope === 'admin' ? 'adminChecklist' : 'managerChecklist';
+  const items = task[field] || [];
+  return items.length > 0 && items.every((i) => i.done);
+}
+
 /**
  * Generate the next sequential task code for a project, e.g. "MKT-0007".
  * Falls back to a "TSK" prefix when the project has no key.
