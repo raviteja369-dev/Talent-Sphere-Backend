@@ -3,17 +3,9 @@ import Project from '../models/Project.js';
 import Task from '../models/Task.js';
 import Department from '../models/Department.js';
 import { asyncHandler } from '../middleware/error.js';
-import { ROLES, TASK_STATUS } from '../config/constants.js';
+import { ROLES, TASK_STATUS, ACTIVE_TASK_STATUSES } from '../config/constants.js';
 
-const ACTIVE_STATUSES = [
-  TASK_STATUS.ASSIGNED,
-  TASK_STATUS.IN_PROGRESS,
-  TASK_STATUS.SUBMITTED,
-  TASK_STATUS.MANAGER_APPROVED,
-  TASK_STATUS.SENT_TO_ADMIN,
-  TASK_STATUS.MANAGER_REJECTED,
-  TASK_STATUS.ADMIN_REJECTED,
-];
+const ACTIVE_STATUSES = ACTIVE_TASK_STATUSES;
 
 // GET /api/dashboard
 export const getDashboard = asyncHandler(async (req, res) => {
