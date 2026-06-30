@@ -1,10 +1,20 @@
 import mongoose from 'mongoose';
+import dns from 'node:dns';
 
 export const connectDB = async () => {
   const uri = process.env.MONGO_URI;
   const directUri = process.env.MONGO_URI_DIRECT;
   if (!uri && !directUri) {
     throw new Error('MONGO_URI is not defined in environment variables');
+  }
+
+  // Some local/corporate DNS resolvers refuse SRV (mongodb+srv) lookups, which
+  // breaks Atlas connections. Prefer reliable public DNS for resolution.
+  try {
+    const current = dns.getServers();
+    dns.setServers(['8.8.8.8', '1.1.1.1', ...current]);
+  } catch {
+    /* ignore — fall back to system DNS */
   }
 
   mongoose.set('strictQuery', true);
